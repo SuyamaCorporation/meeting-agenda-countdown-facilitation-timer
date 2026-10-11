@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Meeting Agenda Facilitation Timer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .agenda-item { transition: all 0.2s; }
+  @keyframes blink { 0%,100%{opacity:1}50%{opacity:0.4} }
+  .overtime { animation: blink 1.5s infinite; }
+</style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+<div class="max-w-2xl mx-auto px-4 py-8">
+  <h1 class="text-2xl font-bold text-white mb-1">Meeting Agenda Timer</h1>
+  <p class="text-sm text-gray-400 mb-6">Build your agenda, start the meeting, and stay on time.</p>
+
+  <div id="builderSection">
+    <div class="bg-gray-800 rounded-xl p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-3">Add Agenda Item</h2>
+      <div class="flex gap-2">
+        <input id="itemTitle" type="text" placeholder="Item title..." class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <input id="itemDuration" type="number" placeholder="Min" min="1" max="120" value="5" class="w-20 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+        <button onclick="addItem()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg transition text-sm">Add</button>
+      </div>
+    </div>
+
+    <div id="agendaList" class="bg-gray-800 rounded-xl overflow-hidden mb-4"></div>
+
+    <div class="flex gap-2 mb-6">
+      <button onclick="startMeeting()" id="startMeetingBtn" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl transition disabled:opacity-40">Start Meeting</button>
+      <button onclick="saveTemplate()" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold px-4 py-3 rounded-xl transition text-sm">Save</button>
+      <button onclick="loadTemplate()" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold px-4 py-3 rounded-xl transition text-sm">Load</button>
+      <button onclick="clearAgenda()" class="bg-red-900 hover:bg-red-800 text-white font-semibold px-4 py-3 rounded-xl transition text-sm">Clear</button>
+    </div>
+  </div>
+
+  <div id="timerSection" class="hidden">
+    <div class="bg-gray-800 rounded-xl p-6 mb-4 text-center">
+      <div id="currentItemLabel" class="text-sm font-semibold text-blue-400 uppercase tracking-wide mb-2">Item</div>
+      <div id="timerDisplay" class="text-6xl font-mono font-bold text-white mb-2">05:00</div>
+      <div id="overtimeLabel" class="text-sm text-red-400 hidden overtime">OVERTIME</div>
+      <div class="w-full bg-gray-700 rounded-full h-2 mb-4 mt-3">
+        <div id="progressBar" class="bg-blue-500 h-2 rounded-full transition-all" style="width:0%"></div>
+      </div>
+      <div class="flex gap-3 justify-center">
+        <button onclick="togglePause()" id="pauseBtn" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-5 rounded-lg transition">Pause</button>
+        <button onclick="nextItem()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-5 rounded-lg transition">Next Item</button>
+        <button onclick="stopMeeting()" class="bg-red-700 hover:bg-red-600 text-white font-semibold py-2 px-5 rounded-lg transition">End Meeting</button>
+      </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-xl p-4 mb-4">
+      <div class="flex justify-between text-xs text-gray-400 mb-2">
+        <span>Agenda Progress</span>
+        <span id="totalTimeInfo"></span>
+      </div>
+      <div id="agendaRunList" class="space-y-1"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let agenda = [];
+let currentIdx = 0;
+let remainingSec = 0;
+let totalSec = 0;
+let elapsed = 0;
+let timerInterval = null;
+let isPaused = false;
+let isOvertime = false;
+let overtimeSeconds = 0;
+let completedItems = new Set();
+let audioCtx = null;
+
+function addItem() {
+  const title = document.getElementById('itemTitle').value.trim();
+  const dur = parseInt(document.getElementById('itemDuration').value) || 5;
+  if (!title) { alert('Please enter an item title.'); return; }
+  agenda.push({ id: Date.now().toString(), title, duration: dur });
+  document.getElementById('itemTitle').value = '';
+  renderBuilder();
+}
+
+function removeItem(id) {
+  agenda = agenda.filter(a => a.id !== id);
+  renderBuilder();
+}
+
+function moveItem(id, dir) {
+  const idx = agenda.findIndex(a => a.id === id);
+  if (idx < 0) return;
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= agenda.length) return;
+  [agenda[idx], agenda[newIdx]] = [agenda[newIdx], agenda[idx]];
+  renderBuilder();
+}
+
+function renderBuilder() {
+  const el = document.getElementById('agendaList');
+  if (agenda.length === 0) {
+    el.innerHTML = '<div class="p-5 text-center text-gray-500 text-sm">No items yet. Add agenda items above.</div>';
+    document.getElementById('startMeetingBtn').disabled = true;
+    return;
+  }
+  document.getElementById('startMeetingBtn').disabled = false;
+  el.innerHTML = '';
+  const total = agenda.reduce((s,a) => s+a.duration, 0);
+  const header = document.createElement('div');
+  header.className = 'px-4 py-2 bg-gray-700 flex justify-between text-xs text-gray-400';
+  const h1 = document.createElement('span');
+  h1.textContent = agenda.length + ' items';
+  const h2 = document.createElement('span');
+  h2.textContent = 'Total: ' + total + ' min';
+  header.appendChild(h1); header.appendChild(h2);
+  el.appendChild(header);
+
+  agenda.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'agenda-item flex items-center gap-2 px-4 py-3 border-t border-gray-700';
+    const num = document.createElement('span');
+    num.className = 'text-xs text-gray-500 w-5 shrink-0';
+    num.textContent = (i+1) + '.';
+    const titleEl = document.createElement('span');
+    titleEl.className = 'flex-1 text-sm text-white';
+    titleEl.textContent = item.title;
+    const dur = document.createElement('span');
+    dur.className = 'text-xs text-blue-400 font-mono w-12 text-right shrink-0';
+    dur.textContent = item.duration + ' min';
+    const btns = document.createElement('div');
+    btns.className = 'flex gap-1';
+    [['▲', -1], ['▼', 1]].forEach(([label, dir]) => {
+      const b = document.createElement('button');
+      b.className = 'text-xs text-gray-400 hover:text-white px-1';
+      b.textContent = label;
+      b.onclick = () => moveItem(item.id, dir);
+      btns.appendChild(b);
+    });
+    const del = document.createElement('button');
+    del.className = 'text-xs text-red-400 hover:text-red-300 ml-1';
+    del.textContent = '✕';
+    del.onclick = () => removeItem(item.id);
+    btns.appendChild(del);
+    row.appendChild(num); row.appendChild(titleEl); row.appendChild(dur); row.appendChild(btns);
+    el.appendChild(row);
+  });
+}
+
+function startMeeting() {
+  if (agenda.length === 0) return;
+  currentIdx = 0;
+  completedItems.clear();
+  document.getElementById('builderSection').classList.add('hidden');
+  document.getElementById('timerSection').classList.remove('hidden');
+  beginItem();
+}
+
+function beginItem() {
+  if (currentIdx >= agenda.length) { endMeeting(); return; }
+  const item = agenda[currentIdx];
+  totalSec = item.duration * 60;
+  remainingSec = totalSec;
+  elapsed = 0;
+  isOvertime = false;
+  overtimeSeconds = 0;
+  isPaused = false;
+  document.getElementById('pauseBtn').textContent = 'Pause';
+  document.getElementById('currentItemLabel').textContent = `(${currentIdx+1}/${agenda.length}) ${item.title}`;
+  document.getElementById('overtimeLabel').classList.add('hidden');
+  document.getElementById('progressBar').className = 'bg-blue-500 h-2 rounded-full transition-all';
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(tick, 1000);
+  renderRunList();
+  updateTimerDisplay();
+}
+
+function tick() {
+  if (isPaused) return;
+  elapsed++;
+  remainingSec--;
+  if (remainingSec <= 0 && !isOvertime) {
+    isOvertime = true;
+    playBeep(440, 3);
+    document.getElementById('overtimeLabel').classList.remove('hidden');
+    document.getElementById('progressBar').className = 'bg-red-500 h-2 rounded-full transition-all overtime';
+    document.getElementById('timerDisplay').className = 'text-6xl font-mono font-bold text-red-400 mb-2 overtime';
+  }
+  if (isOvertime) { overtimeSeconds++; remainingSec = 0; }
+  updateTimerDisplay();
+}
+
+function updateTimerDisplay() {
+  if (isOvertime) {
+    const min = Math.floor(overtimeSeconds / 60);
+    const sec = overtimeSeconds % 60;
+    document.getElementById('timerDisplay').textContent = '+' + String(min).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+    document.getElementById('progressBar').style.width = '100%';
+  } else {
+    const min = Math.floor(remainingSec / 60);
+    const sec = remainingSec % 60;
+    document.getElementById('timerDisplay').textContent = String(min).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+    const pct = (1 - remainingSec/totalSec) * 100;
+    document.getElementById('progressBar').style.width = pct + '%';
+  }
+  const totalAgendaMin = agenda.reduce((s,a)=>s+a.duration,0);
+  const completedMin = Array.from(completedItems).reduce((s,id) => s + (agenda.find(a=>a.id===id)?.duration||0), 0);
+  const currentMin = Math.floor(elapsed/60);
+  document.getElementById('totalTimeInfo').textContent = `${completedMin + currentMin}/${totalAgendaMin} min elapsed`;
+}
+
+function togglePause() {
+  isPaused = !isPaused;
+  document.getElementById('pauseBtn').textContent = isPaused ? 'Resume' : 'Pause';
+}
+
+function nextItem() {
+  clearInterval(timerInterval);
+  playBeep(660, 2);
+  completedItems.add(agenda[currentIdx].id);
+  currentIdx++;
+  renderRunList();
+  if (currentIdx >= agenda.length) { endMeeting(); return; }
+  setTimeout(beginItem, 300);
+}
+
+function endMeeting() {
+  clearInterval(timerInterval);
+  document.getElementById('currentItemLabel').textContent = 'Meeting Complete!';
+  document.getElementById('timerDisplay').textContent = '00:00';
+  document.getElementById('timerDisplay').className = 'text-6xl font-mono font-bold text-green-400 mb-2';
+  playBeep(880, 5);
+}
+
+function stopMeeting() {
+  clearInterval(timerInterval);
+  document.getElementById('builderSection').classList.remove('hidden');
+  document.getElementById('timerSection').classList.add('hidden');
+  document.getElementById('timerDisplay').className = 'text-6xl font-mono font-bold text-white mb-2';
+}
+
+function renderRunList() {
+  const el = document.getElementById('agendaRunList');
+  el.innerHTML = '';
+  agenda.forEach((item, i) => {
+    const row = document.createElement('div');
+    const isDone = completedItems.has(item.id);
+    const isCurrent = i === currentIdx && !isDone;
+    row.className = `flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${isCurrent ? 'bg-blue-800' : isDone ? 'opacity-50' : 'opacity-70'}`;
+    const check = document.createElement('span');
+    check.className = 'w-5 h-5 flex items-center justify-center rounded-full text-xs shrink-0 ' + (isDone ? 'bg-green-500 text-white' : isCurrent ? 'bg-blue-500 text-white' : 'bg-gray-600 text-gray-400');
+    check.textContent = isDone ? '✓' : (i+1);
+    const title = document.createElement('span');
+    title.className = `flex-1 ${isDone ? 'line-through text-gray-500' : 'text-white'}`;
+    title.textContent = item.title;
+    const dur = document.createElement('span');
+    dur.className = 'text-xs text-gray-400 shrink-0';
+    dur.textContent = item.duration + ' min';
+    row.appendChild(check); row.appendChild(title); row.appendChild(dur);
+    el.appendChild(row);
+  });
+}
+
+function saveTemplate() {
+  if (agenda.length === 0) return;
+  const name = prompt('Template name:', 'My Meeting');
+  if (!name) return;
+  const templates = JSON.parse(localStorage.getItem('agenda-templates') || '{}');
+  templates[name] = agenda;
+  localStorage.setItem('agenda-templates', JSON.stringify(templates));
+  alert('Template saved: ' + name);
+}
+
+function loadTemplate() {
+  const templates = JSON.parse(localStorage.getItem('agenda-templates') || '{}');
+  const keys = Object.keys(templates);
+  if (keys.length === 0) { alert('No saved templates.'); return; }
+  const name = prompt('Load template:\n' + keys.join('\n'));
+  if (name && templates[name]) {
+    agenda = templates[name].map(a => ({...a, id: Date.now().toString() + Math.random()}));
+    renderBuilder();
+  }
+}
+
+function clearAgenda() {
+  if (confirm('Clear all agenda items?')) { agenda = []; renderBuilder(); }
+}
+
+function playBeep(freq, count=1) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let t = audioCtx.currentTime;
+    for (let i=0; i<count; i++) {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.25, t+i*0.3);
+      g.gain.exponentialRampToValueAtTime(0.001, t+i*0.3+0.25);
+      osc.start(t+i*0.3); osc.stop(t+i*0.3+0.25);
+    }
+  } catch(e) {}
+}
+
+// Seed a sample agenda
+agenda = [
+  { id: '1', title: 'Welcome & Introductions', duration: 5 },
+  { id: '2', title: 'Review Last Meeting Action Items', duration: 10 },
+  { id: '3', title: 'Q3 Progress Update', duration: 20 },
+  { id: '4', title: 'Roadmap Discussion', duration: 15 },
+  { id: '5', title: 'Next Steps & Action Items', duration: 5 },
+  { id: '6', title: 'AOB / Open Floor', duration: 5 },
+];
+renderBuilder();
+</script>
+</body>
+</html>
